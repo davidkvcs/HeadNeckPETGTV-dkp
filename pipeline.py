@@ -10,6 +10,8 @@ from random import randint
 
 # Third party Packages
 import nibabel
+import SimpleITK as sitk
+from typing import Optional
 import numpy
 import numpy as np
 from rt_utils import RTStructBuilder
@@ -86,42 +88,42 @@ else:
   SEGMENTATION_PATH = None
 
 #region Setup
-def crop_to_350_mm(nii_ct_path : Path):
-  # get n_slices in first 35 cm
-  img = nibabel.load(nii_ct_path)
+def crop_to_350_mm(nii_ct_path: Path, destination: Optional[Path] = None, crop_mm: float = 350.0) -> str:
+  nii_ct_path = Path(nii_ct_path)
 
-  slice_thickness = img.header['pixdim'][3]
-  total_slices = img.header['dim'][3]
-  slices_per_35cm = int(numpy.ceil(350 / slice_thickness))
+  if destination is None:
+    destination = nii_ct_path.with_name("HNC04_000_CT.nii.gz")
 
-  #logger = get_logger()
-  #logger.info(f"img.header: {img.header}")
-  #logger.info(f"n_slices: {n_slices}")
-  #logger.info(f"tot_slices: {tot_slices}")
+  img = sitk.ReadImage(str(nii_ct_path))  # x,y,z in SimpleITK
+  size_x, size_y, size_z = img.GetSize()
+  spacing_x, spacing_y, spacing_z = img.GetSpacing()
 
-  crop_slices = min(slices_per_35cm, total_slices)
+  if spacing_z <= 0:
+    raise ValueError(f"Invalid spacing_z={spacing_z} for {nii_ct_path}")
 
-  #cropped_img = img.slicer[:,:,tot_slices-n_slices:total_slices]
-  data = img.get_fdata()
-  start = total_slices - crop_slices
+  slices_to_keep = int(numpy.ceil(crop_mm / spacing_z))
+  slices_to_keep = max(1, min(slices_to_keep, size_z))
 
-  sliced_data = data[:, :, start:total_slices]
+  # Keep the last slices (matches current downstream padding logic)
+  start_z = size_z - slices_to_keep
 
-  new_header = img.header.copy()
+  roi_index = [0, 0, start_z]
+  roi_size  = [size_x, size_y, slices_to_keep]
 
-  new_header['dim'][0] = 3
-  new_header['dim'][1] = sliced_data.shape[0]
-  new_header['dim'][2] = sliced_data.shape[1]
-  new_header['dim'][3] = sliced_data.shape[2]
+  cropped = sitk.RegionOfInterest(img, size=roi_size, index=roi_index)
+  sitk.WriteImage(cropped, str(destination))
 
-  new_nifti = nibabel.Nifti1Image(sliced_data, img.affine, new_header)
+  return str(destination)
 
-  nii_ct_path_destination = 'HNC04_000_CT.nii.gz'
-  #cropped_img.to_filename(nii_ct_path_destination)
-
-  new_nifti.to_filename(nii_ct_path_destination)
-
-  return nii_ct_path_destination
+def find_dcm2niix_output(cwd: Path, stem: str) -> Path:
+  candidates = [
+    cwd / f"{stem}.nii.gz",
+    cwd / f"{stem}.nii",
+  ]
+  for p in candidates:
+    if p.exists():
+      return p
+  raise FileNotFoundError(f"Could not find dcm2niix output for '{stem}' in {cwd}")
 
 
 timestamp_format = "%Y%m%d%H%M%S.%f"
@@ -228,7 +230,9 @@ class PET_GTV_Pipeline(AbstractQueuedPipeline):
     #header.set_data_dtype('float32')
     #nibabel.save(nibabel.Nifti1Image(data, ct_nifti.affine, header), 'ct_f32.nii')
 
-    ct_nifti_path = crop_to_350_mm('ct.nii')
+    ct_nii_path = find_dcm2niix_output(Path(getcwd()), "ct")
+    ct_nifti_path = crop_to_350_mm(ct_nii_path, destination=Path(getcwd()) / "HNC04_000_CT.nii.gz")
+
     self.logger.info("Preprocessing step 1 complete, resampeling")
     #region Resampling
     resample_command = [
