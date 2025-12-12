@@ -101,11 +101,11 @@ def crop_to_350_mm(nii_ct_path : Path):
 
   crop_slices = min(slices_per_35cm, total_slices)
 
-  data = img.get_fdata()
-  start = 0
-
-  sliced_data = data[:,:, start : crop_slices ]
   #cropped_img = img.slicer[:,:,tot_slices-n_slices:total_slices]
+  data = img.get_fdata()
+  start = total_slices - crop_slices
+
+  sliced_data = data[:, :, start:total_slices]
 
   new_header = img.header.copy()
 
