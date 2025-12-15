@@ -23,6 +23,19 @@ from dicomnode.server.output import DicomOutput, PipelineOutput, FileOutput, Mul
 from dicomnode.server.pipeline_tree import InputContainer
 from dicomnode.lib.logging import get_logger
 
+# to export files for troubleshooting
+import shutil
+import json
+
+ENVIRONMENT_DEBUG_DUMP_PATH = "PIPELINE_DEBUG_DUMP_PATH"
+RAW_DEBUG_DUMP_PATH = environ.get(ENVIRONMENT_DEBUG_DUMP_PATH, None)
+
+if RAW_DEBUG_DUMP_PATH:
+  DEBUG_DUMP_PATH = Path(RAW_DEBUG_DUMP_PATH)
+  DEBUG_DUMP_PATH.mkdir(parents=True, exist_ok=True)
+else:
+  DEBUG_DUMP_PATH = None
+
 #region Environment Setup
 ENVIRONMENT_ARCHIVE_PATH = "PIPELINE_ARCHIVE_PATH"
 ENVIRONMENT_ARCHIVE_PATH_VALUE = environ.get(ENVIRONMENT_ARCHIVE_PATH,
@@ -193,6 +206,56 @@ class PET_GTV_Pipeline(AbstractQueuedPipeline):
         self.logger.error(f"{name} stderr:\n{cp.stderr}")
       raise RuntimeError(f"{name} failed (rc={cp.returncode})")
     return cp
+
+    def dump_nifti_for_debug(self, src_path: Path, pivot_pet_dataset, tag: str) -> None:
+    if DEBUG_DUMP_PATH is None:
+      return
+
+    try:
+      src_path = Path(src_path)
+      if not src_path.exists():
+        self.logger.warning(f"Debug dump skipped; missing file: {src_path}")
+        return
+
+      ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+      patient_id = getattr(pivot_pet_dataset, "PatientID", "UNKNOWN")
+      study_uid = getattr(pivot_pet_dataset, "StudyInstanceUID", "UNKNOWN").replace(".", "_")
+
+      out_dir = DEBUG_DUMP_PATH / patient_id
+      out_dir.mkdir(parents=True, exist_ok=True)
+
+      out_path = out_dir / f"{ts}_{tag}_{study_uid}{src_path.suffixes[-2] if src_path.name.endswith('.nii.gz') else src_path.suffix}"
+      # Above keeps .nii.gz vs .nii (simple but robust enough)
+
+      # Copy the exact bytes sent to podman
+      shutil.copy2(src_path, out_path)
+
+      # Write small sidecar with sanity-check metadata
+      img = nibabel.load(str(src_path))
+      data = img.get_fdata()
+
+      meta = {
+        "source": str(src_path),
+        "dumped_to": str(out_path),
+        "tag": tag,
+        "patient_id": patient_id,
+        "study_uid": getattr(pivot_pet_dataset, "StudyInstanceUID", "UNKNOWN"),
+        "shape": list(data.shape),
+        "dtype": str(data.dtype),
+        "min": float(np.nanmin(data)),
+        "max": float(np.nanmax(data)),
+        "affine": img.affine.tolist(),
+        "zooms": list(img.header.get_zooms()),
+      }
+
+      meta_path = out_dir / (out_path.name + ".json")
+      meta_path.write_text(json.dumps(meta, indent=2))
+
+      self.logger.info(f"Debug dump saved: {out_path}")
+
+    except Exception as e:
+      self.logger.warning(f"Debug dump failed for {src_path} ({tag}): {e}")
+
   
   def log_subprocess(self, output: CompletedProcess, process_name: str, log_anyways=False):
     if output.returncode != 0:
@@ -280,6 +343,9 @@ class PET_GTV_Pipeline(AbstractQueuedPipeline):
       "segmentation.nii.gz",
     ]
 
+    # Dump exactly what we send into the container
+    self.dump_nifti_for_debug(Path("HNC04_000_CT.nii.gz"), pivot_pet_dataset, "ct_to_podman")
+    self.dump_nifti_for_debug(Path("HNC04_000_PET.nii.gz"), pivot_pet_dataset, "pet_to_podman")
 
     self.logger.info("Started podman process")
     self.run_checked(podman_command, "Podman")
