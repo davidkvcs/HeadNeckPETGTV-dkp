@@ -206,8 +206,8 @@ class PET_GTV_Pipeline(AbstractQueuedPipeline):
         self.logger.error(f"{name} stderr:\n{cp.stderr}")
       raise RuntimeError(f"{name} failed (rc={cp.returncode})")
     return cp
-
-    def dump_nifti_for_debug(self, src_path: Path, pivot_pet_dataset, tag: str) -> None:
+  
+  def dump_nifti_for_debug(self, src_path: Path, pivot_pet_dataset, tag: str) -> None:
     if DEBUG_DUMP_PATH is None:
       return
 
