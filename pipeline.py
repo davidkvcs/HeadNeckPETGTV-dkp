@@ -267,21 +267,19 @@ class PET_GTV_Pipeline(AbstractQueuedPipeline):
     # ---- Podman inference (explicit container paths) ----
     seg_host = cwd / "segmentation.nii.gz"
 
-    pet_in_container = "/usr/src/app/dataset/HNC04_000_PET.nii.gz"
-    ct_in_container  = "/usr/src/app/dataset/HNC04_000_CT.nii.gz"
-    seg_in_container = "/usr/src/app/dataset/segmentation.nii.gz"
-
     podman_command = [
       "podman", "run",
       "--rm",
       "--security-opt=label=disable",
       "--device=nvidia.com/gpu=all",
       "-v", f"{str(cwd)}:/usr/src/app/dataset",
+      "-w", "/usr/src/app",
       "depict/hnc_pet_gtv:latest",
-      pet_in_container,
-      ct_in_container,
-      seg_in_container,
+      "HNC04_000_PET.nii.gz",
+      "HNC04_000_CT.nii.gz",
+      "segmentation.nii.gz",
     ]
+
 
     self.logger.info("Started podman process")
     self.run_checked(podman_command, "Podman")
