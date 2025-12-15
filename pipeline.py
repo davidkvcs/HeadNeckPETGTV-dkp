@@ -183,6 +183,17 @@ class PET_GTV_Pipeline(AbstractQueuedPipeline):
   processing_directory = WORKING_PATH
   log_level = DEBUG
 
+  def run_checked(self, cmd, name: str) -> CompletedProcess:
+    cp = run_subprocess(cmd, capture_output=True, text=True)
+    if cp.returncode != 0:
+      self.logger.error(f"{name} failed (rc={cp.returncode})")
+      if cp.stdout:
+        self.logger.error(f"{name} stdout:\n{cp.stdout}")
+      if cp.stderr:
+        self.logger.error(f"{name} stderr:\n{cp.stderr}")
+      raise RuntimeError(f"{name} failed (rc={cp.returncode})")
+    return cp
+  
   def log_subprocess(self, output: CompletedProcess, process_name: str, log_anyways=False):
     if output.returncode != 0:
       self.logger.error(f"{process_name} return code: {output.returncode}")
@@ -215,14 +226,13 @@ class PET_GTV_Pipeline(AbstractQueuedPipeline):
     # Dicom to nifti conversion
     cwd = Path(getcwd())
     pet_destination_path = "HNC04_000_PET.nii.gz"
-    ct_command = [DCM2NIIX, '-o', str(cwd), '-f', 'ct',str(ct_path)]
-    self.log_subprocess(run_subprocess(ct_command, capture_output=True),
-                        "dcm2niix ct")
 
+    ct_command = [DCM2NIIX, '-o', str(cwd), '-f', 'ct',str(ct_path)]
+    self.run_checked(ct_command, "dcm2niix ct")
 
     pet_command = [DCM2NIIX, '-o', str(cwd), '-f', 'pet', str(pet_path)]
-    self.log_subprocess(run_subprocess(pet_command, capture_output=True),
-                        "dcm2niix pet")
+    self.run_checked(pet_command, "dcm2niix pet")
+
 
     #ct_nifti = nibabel.load('ct.nii')
     #data = ct_nifti.get_fdata().astype('float32')
@@ -243,9 +253,9 @@ class PET_GTV_Pipeline(AbstractQueuedPipeline):
       '-res', pet_destination_path,
     ]
 
-    self.log_subprocess(run_subprocess(resample_command, capture_output=False),
-                        'Pet Resample')
+    self.run_checked(resample_command, "Pet Resample")
 
+    
     self.logger.info("Resampleing compelete")
     pet_image = nibabel.load(pet_destination_path)
     pet_data = pet_image.get_fdata()
@@ -254,24 +264,36 @@ class PET_GTV_Pipeline(AbstractQueuedPipeline):
     nibabel.save(pet_image, pet_destination_path)
 
     #
-    segmentation_path = cwd / "segmentation.nii.gz"
-    podman_command = ['podman',
-                    'run',
-                    '--security-opt=label=disable',
-                    '--device=nvidia.com/gpu=all',
-                    '-v',
-                    f'{str(cwd)}:/usr/src/app/dataset',
-                    "-w", "/usr/src/app/dataset",
-                    'depict/hnc_pet_gtv:latest',
-                    pet_destination_path,
-                    ct_nifti_path,
-                    "segmentation.nii.gz"
-                  ]
+    # ---- Podman inference (explicit container paths) ----
+    seg_host = cwd / "segmentation.nii.gz"
+
+    pet_in_container = "/usr/src/app/dataset/HNC04_000_PET.nii.gz"
+    ct_in_container  = "/usr/src/app/dataset/HNC04_000_CT.nii.gz"
+    seg_in_container = "/usr/src/app/dataset/segmentation.nii.gz"
+
+    podman_command = [
+      "podman", "run",
+      "--rm",
+      "--security-opt=label=disable",
+      "--device=nvidia.com/gpu=all",
+      "-v", f"{str(cwd)}:/usr/src/app/dataset",
+      "depict/hnc_pet_gtv:latest",
+      pet_in_container,
+      ct_in_container,
+      seg_in_container,
+    ]
+
     self.logger.info("Started podman process")
-    self.log_subprocess(run_subprocess(podman_command, capture_output=False),                        'Podman',
-                        log_anyways=False)
+    self.run_checked(podman_command, "Podman")
     self.logger.info("Finished podman process, started post processing")
-    segmentation: nibabel.nifti1.Nifti1Image = nibabel.load(str(segmentation_path))
+
+    if not seg_host.exists():
+      self.logger.error("Segmentation file was not created by podman.")
+      self.logger.error("Working dir contents:\n" + "\n".join(sorted(p.name for p in cwd.iterdir())))
+      raise FileNotFoundError(f"Missing expected output: {seg_host}")
+
+    segmentation: nibabel.nifti1.Nifti1Image = nibabel.load(str(seg_host))
+
 
     #self.logger.error("Pet image affine")
     #self.logger.error(pet_image.affine)
