@@ -231,7 +231,8 @@ class PET_GTV_Pipeline(AbstractQueuedPipeline):
     #nibabel.save(nibabel.Nifti1Image(data, ct_nifti.affine, header), 'ct_f32.nii')
 
     ct_nii_path = find_dcm2niix_output(Path(getcwd()), "ct")
-    ct_nifti_path = crop_to_350_mm(ct_nii_path, destination=Path(getcwd()) / "HNC04_000_CT.nii.gz")
+    ct_nifti_path = Path("HNC04_000_CT.nii.gz")
+    crop_to_350_mm(ct_nii_path, destination=ct_nifti_path)
 
     self.logger.info("Preprocessing step 1 complete, resampeling")
     #region Resampling
@@ -260,6 +261,7 @@ class PET_GTV_Pipeline(AbstractQueuedPipeline):
                     '--device=nvidia.com/gpu=all',
                     '-v',
                     f'{str(cwd)}:/usr/src/app/dataset',
+                    "-w", "/usr/src/app/dataset",
                     'depict/hnc_pet_gtv:latest',
                     pet_destination_path,
                     ct_nifti_path,
